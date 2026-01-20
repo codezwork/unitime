@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>UniTime</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: { bg: '#0f172a', card: '#1e293b', text: '#f1f5f9' }
+                    }
+                }
+            }
+        }
+    </script>
+    <meta name="theme-color" content="#4F46E5">
+    
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+    
+    <style>
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .tab-active { color: #4F46E5; transform: translateY(-2px); }
+        .tab-inactive { color: #9CA3AF; }
+        .dark .tab-active { color: #818cf8; }
+        .dark .tab-inactive { color: #64748b; }
+        .page-transition { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        /* Sticky Offset Calculation: Header is approx 72px */
+        .sticky-header-offset { top: 72px; }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        // REMOVED: setDoc (Browser is no longer allowed to write)
+        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        // --- FIREBASE CONFIG (Paste your own if different) ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBqJt108ogAwMIYtPr1B6pqJDDyU4MtqCM",
+            authDomain: "unitime-e1105.firebaseapp.com",
+            projectId: "unitime-e1105",
+            storageBucket: "unitime-e1105.firebasestorage.app",
+            messagingSenderId: "759356621073",
+            appId: "1:759356621073:web:eec8fb86960ac604d90cb0"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const provider = new GoogleAuthProvider();
+
+        // --- THEME & PWA ---
+        window.initTheme = () => {
+            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        }
+        window.toggleTheme = () => {
+            document.documentElement.classList.toggle('dark');
+            localStorage.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+        }
+        window.initTheme();
+
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const btn = document.getElementById('install-btn');
+            if(btn) btn.classList.remove('hidden');
+        });
+        window.installPWA = async () => {
+            if (!deferredPrompt) return;
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            if (outcome === 'accepted') {
+                deferredPrompt = null;
+                document.getElementById('install-btn').classList.add('hidden');
+            }
+        }
+
+        // --- DATA CONSTANTS ---
+        const TIME_SLOTS = {
+            "Morning": [{ start: "08:00", end: "08:50" }, { start: "09:00", end: "09:50" }, { start: "10:00", end: "10:50" }, { start: "11:00", end: "11:50" }],
+            "Afternoon_1": { start: "13:00", end: "13:50" },
+            "Afternoon_Long": { start: "14:00", end: "16:45" },
+            "Afternoon_Split_1": { start: "14:00", end: "15:15" },
+            "Afternoon_Split_2": { start: "15:30", end: "16:45" },
+            "Evening": { start: "17:00", end: "17:50" }
+        };
+        const DAY_MAP = {
+            "Monday": { morn: ["A", "B", "C", "D"], aft1: "G", long: "P", split1: ["H", "H1"], split2: ["M", "M2"], eve: ["J", "J3"] },
+            "Tuesday": { morn: ["B", "C", "D", "E"], aft1: "A", long: "Q", split1: ["M", "M1"], split2: ["H", "H2"], eve: ["F"] },
+            "Wednesday": { morn: ["C", "D", "E", "F"], aft1: "B", long: "R", split1: ["J", "J1"], split2: ["K", "K2"], eve: ["G"] },
+            "Thursday": { morn: ["E", "F", "G", "A"], aft1: "D", long: "S", split1: ["L", "L1"], split2: ["J", "J2"], eve: ["H", "H3"] },
+            "Friday": { morn: ["F", "G", "A", "B"], aft1: "C", long: "T", split1: ["K", "K1"], split2: ["L", "L2"], eve: ["E"] }
+        };
+        const DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+        // --- STATE ---
+        let userCourses = {}; 
+        let messData = null;
+        let currentMessCycle = "A"; 
+        let messDayOffset = 0; 
+
+        // --- TIMETABLE LOGIC ---
+        function getTodaysSchedule(dayName) {
+            const schema = DAY_MAP[dayName];
+            if (!schema) return [];
+            let schedule = [];
+            const pushIfExists = (code, timeSlot, type) => {
+                const codes = Array.isArray(code) ? code : [code];
+                const foundCode = codes.find(c => userCourses[c]);
+                if (foundCode) schedule.push({ ...userCourses[foundCode], ...timeSlot, type: type, slotCode: foundCode });
+            };
+            schema.morn.forEach((code, i) => pushIfExists(code, TIME_SLOTS.Morning[i], 'Lecture'));
+            pushIfExists(schema.aft1, TIME_SLOTS.Afternoon_1, 'Lecture');
+            if (userCourses[schema.long]) pushIfExists(schema.long, TIME_SLOTS.Afternoon_Long, 'Lab');
+            else {
+                pushIfExists(schema.split1, TIME_SLOTS.Afternoon_Split_1, 'Theory');
+                pushIfExists(schema.split2, TIME_SLOTS.Afternoon_Split_2, 'Theory');
+            }
+            pushIfExists(schema.eve, TIME_SLOTS.Evening, 'Evening');
+            return schedule.sort((a, b) => a.start.localeCompare(b.start));
+        }
+
+        function renderTimetable() {
+            const now = new Date();
+            const dayName = DAYS_OF_WEEK[now.getDay()];
+            const currentTime = now.getHours() * 60 + now.getMinutes();
+            const todaysClasses = getTodaysSchedule(dayName);
+
+            // Render Hero
+            const heroContainer = document.getElementById('hero-card-container');
+            const nextClass = todaysClasses.find(cls => {
+                const [h, m] = cls.start.split(':').map(Number);
+                return (h * 60 + m) > currentTime;
+            });
+            const currentClass = todaysClasses.find(cls => {
+                const [sH, sM] = cls.start.split(':').map(Number);
+                const [eH, eM] = cls.end.split(':').map(Number);
+                const start = sH * 60 + sM;
+                const end = eH * 60 + eM;
+                return currentTime >= start && currentTime < end;
+            });
+
+            if (currentClass) renderHero(currentClass, "Happening Now", "bg-emerald-500");
+            else if (nextClass) {
+                const [h, m] = nextClass.start.split(':').map(Number);
+                const diff = (h * 60 + m) - currentTime;
+                renderHero(nextClass, `Starts in ${diff} min`, "bg-indigo-600 dark:bg-indigo-700");
+            } else {
+                heroContainer.innerHTML = `
+                    <div class="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg mb-4">
+                        <div class="text-3xl mb-2">🎉</div>
+                        <h2 class="text-xl font-bold">All caught up!</h2>
+                        <p class="opacity-90 text-sm">No more classes scheduled for today.</p>
+                    </div>`;
+            }
+
+            // Render List
+            const listContainer = document.getElementById('timetable-list');
+            listContainer.innerHTML = '';
+            
+            if(todaysClasses.length === 0) return;
+
+            todaysClasses.forEach(cls => {
+                const [endH, endM] = cls.end.split(':').map(Number);
+                const isFinished = currentTime > (endH * 60 + endM);
+                const opacity = isFinished ? "opacity-50 grayscale" : "opacity-100";
+                const isHero = (currentClass && cls === currentClass) || (!currentClass && nextClass && cls === nextClass);
+                const highlight = isHero ? "ring-2 ring-indigo-500 dark:ring-indigo-400 ring-offset-2 dark:ring-offset-gray-900" : "";
+
+                const html = `
+                    <div class="bg-white dark:bg-gray-800 rounded-xl p-4 mb-3 border border-gray-100 dark:border-gray-700 shadow-sm flex justify-between items-center ${opacity} ${highlight} transition-colors">
+                        <div>
+                            <h3 class="font-bold text-gray-800 dark:text-gray-100">${cls.name}</h3>
+                            <div class="flex items-center gap-2 mt-1">
+                                <span class="text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded">${cls.courseCode}</span>
+                                <span class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1"><ion-icon name="location"></ion-icon>${cls.venue}</span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-mono text-sm font-bold text-gray-700 dark:text-gray-300">${cls.start}</div>
+                            <div class="font-mono text-xs text-gray-400 dark:text-gray-500">${cls.end}</div>
+                        </div>
+                    </div>`;
+                listContainer.insertAdjacentHTML('beforeend', html);
+            });
+        }
+
+        function renderHero(cls, status, color) {
+            document.getElementById('hero-card-container').innerHTML = `
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700 mb-6 relative transition-colors">
+                    <div class="${color} px-5 py-3 flex justify-between items-center text-white">
+                        <span class="font-bold text-sm uppercase tracking-wide flex items-center gap-2"><ion-icon name="time"></ion-icon> ${status}</span>
+                    </div>
+                    <div class="p-5">
+                        <h1 class="text-2xl font-bold text-gray-900 dark:text-white leading-tight mb-1">${cls.name}</h1>
+                        <p class="text-gray-500 dark:text-gray-400 text-sm font-medium mb-4">${cls.courseCode} • Slot ${cls.slotCode}</p>
+                        <div class="flex items-center gap-4 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 p-3 rounded-lg border border-gray-100 dark:border-gray-600">
+                            <div class="flex items-center gap-2"><ion-icon name="location" class="text-indigo-500 dark:text-indigo-400 text-lg"></ion-icon> ${cls.venue}</div>
+                            <div class="w-px h-4 bg-gray-300 dark:bg-gray-600"></div>
+                            <div class="flex items-center gap-2"><ion-icon name="stopwatch" class="text-indigo-500 dark:text-indigo-400 text-lg"></ion-icon> ${cls.start} - ${cls.end}</div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // --- MESS LOGIC ---
+        function calculateMessWeek() {
+            const anchorDate = new Date("2025-09-01"); 
+            const today = new Date();
+            const diffTime = Math.abs(today - anchorDate);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            const diffWeeks = Math.floor(diffDays / 7);
+            const cycle = ["A", "B", "C", "D"];
+            return cycle[diffWeeks % 4];
+        }
+
+        async function fetchMessData() {
+            const menuId = "2025-09-01"; 
+            try {
+                const docRef = doc(db, "messmenudetails", menuId);
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    messData = docSnap.data().Messmenu;
+                    currentMessCycle = calculateMessWeek();
+                    renderMessMenu();
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        window.toggleMessDay = (direction) => {
+            messDayOffset += direction;
+            renderMessMenu();
+        }
+
+        function renderMessMenu() {
+            if (!messData) return;
+            const todayIndex = new Date().getDay(); 
+            let targetIndex = (todayIndex + messDayOffset) % 7;
+            if (targetIndex < 0) targetIndex += 7;
+            const targetDayName = DAYS_OF_WEEK[targetIndex];
+            
+            const displayEl = document.getElementById('mess-day-display');
+            if (messDayOffset === 0) displayEl.innerText = "Today";
+            else if (messDayOffset === 1) displayEl.innerText = "Tomorrow";
+            else if (messDayOffset === -1) displayEl.innerText = "Yesterday";
+            else displayEl.innerText = targetDayName;
+
+            const category = document.getElementById('mess-category-select').value;
+            const container = document.getElementById('mess-list');
+            container.innerHTML = '';
+
+            const catData = messData.Categories[category];
+            if (!catData || !catData[currentMessCycle]) {
+                container.innerHTML = `<div class="p-4 text-center text-gray-400 dark:text-gray-500">Data missing</div>`; return;
+            }
+
+            const dailyMenu = catData[currentMessCycle].schedule[targetDayName];
+            if (!dailyMenu) {
+                container.innerHTML = `<div class="p-4 text-center text-gray-400 dark:text-gray-500">Mess Closed</div>`; return;
+            }
+
+            ["Breakfast", "Lunch", "Snacks", "Dinner"].forEach(meal => {
+                const items = dailyMenu[meal];
+                if(!items) return;
+                
+                let itemsHtml = Array.isArray(items) 
+                    ? items.map(i => i.includes('*') 
+                        ? `<span class="bg-yellow-100 dark:bg-yellow-900/30 text-yellow-900 dark:text-yellow-200 px-2 py-1 rounded text-sm font-semibold">${i.replace(/\*/g, '')}</span>`
+                        : `<span class="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-1 rounded text-sm">${i}</span>`
+                      ).join('') 
+                    : `<span class="text-sm text-gray-600 dark:text-gray-400">${items}</span>`;
+
+                container.innerHTML += `
+                    <div class="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm mb-3 transition-colors">
+                        <h3 class="font-bold text-indigo-600 dark:text-indigo-400 mb-2 text-sm uppercase tracking-wide">${meal}</h3>
+                        <div class="flex flex-wrap gap-2">${itemsHtml}</div>
+                    </div>`;
+            });
+        }
+
+        // --- COURSE MANAGEMENT ---
+        window.toggleModal = () => {
+            const modal = document.getElementById('add-modal');
+            modal.classList.toggle('hidden');
+            if(!modal.classList.contains('hidden')) renderModalRows();
+        }
+
+        window.renderModalRows = () => {
+            const container = document.getElementById('courses-container');
+            container.innerHTML = '';
+            if (Object.keys(userCourses).length === 0) addCourseRow(); 
+            else Object.values(userCourses).forEach(course => addCourseRow(course));
+        }
+
+        window.addCourseRow = (data = {}) => {
+            const rowId = Date.now() + Math.random();
+            const html = `
+                <div class="course-row bg-gray-50 dark:bg-gray-700/50 p-3 rounded-lg border border-gray-200 dark:border-gray-600 relative mb-3 transition-colors" id="row-${rowId}">
+                    <button onclick="document.getElementById('row-${rowId}').remove()" class="absolute top-2 right-2 text-gray-400 hover:text-red-500"><ion-icon name="close"></ion-icon></button>
+                    <div class="grid grid-cols-3 gap-2">
+                        <select class="slot-select p-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm col-span-1 focus:ring-2 focus:ring-indigo-500 outline-none">
+                            <option value="" disabled ${!data.code ? 'selected' : ''}>Slot</option>
+                            ${['A','B','C','D','E','F','G'].map(s => `<option value="${s}" ${data.code===s?'selected':''}>${s}</option>`).join('')}
+                            <optgroup label="Labs">${['P','Q','R','S','T'].map(s => `<option value="${s}" ${data.code===s?'selected':''}>${s}</option>`).join('')}</optgroup>
+                            <optgroup label="Split">${['H','M','J','K','L'].map(s => `<option value="${s}" ${data.code===s?'selected':''}>${s}</option>`).join('')}</optgroup>
+                        </select>
+                        <input type="text" class="course-code p-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm col-span-2 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Code (e.g. MAT101)" value="${data.courseCode||''}">
+                        <input type="text" class="course-name p-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm col-span-3 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Course Name" value="${data.name||''}">
+                        <input type="text" class="venue p-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm col-span-3 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Venue (e.g. LH-1)" value="${data.venue||''}">
+                    </div>
+                </div>`;
+            document.getElementById('courses-container').insertAdjacentHTML('beforeend', html);
+        }
+
+        // --- MODIFIED SECURE SAVE FUNCTION ---
+        window.saveAllCourses = async () => {
+            let newCourses = {};
+            document.querySelectorAll('.course-row').forEach(row => {
+                const slot = row.querySelector('.slot-select').value;
+                if (slot) {
+                    newCourses[slot] = {
+                        code: slot,
+                        courseCode: row.querySelector('.course-code').value,
+                        name: row.querySelector('.course-name').value,
+                        venue: row.querySelector('.venue').value
+                    };
+                }
+            });
+            
+            userCourses = newCourses;
+            const user = auth.currentUser;
+            
+            if (user) {
+                // UPDATE: Instead of writing to DB directly, we ask the server to do it.
+                // 1. Get the security token (ID Badge)
+                const token = await user.getIdToken();
+
+                // 2. Send data to our secure API
+                try {
+                    const response = await fetch('/api/save-courses', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ courses: userCourses })
+                    });
+
+                    if (response.ok) {
+                        toggleModal();
+                        renderTimetable();
+                        alert("Courses saved securely!");
+                    } else {
+                        alert("Error saving courses. Please try again.");
+                    }
+                } catch (error) {
+                    console.error("Save failed:", error);
+                    alert("Network error. Could not save.");
+                }
+            }
+        }
+
+        // --- NAVIGATION & INIT ---
+        window.switchTab = (tab) => {
+            if (tab === 'timetable') {
+                document.getElementById('timetable-view').classList.remove('hidden');
+                document.getElementById('mess-view').classList.add('hidden');
+                document.getElementById('nav-time').classList.replace('tab-inactive', 'tab-active');
+                document.getElementById('nav-mess').classList.replace('tab-active', 'tab-inactive');
+                renderTimetable();
+            } else {
+                document.getElementById('timetable-view').classList.add('hidden');
+                document.getElementById('mess-view').classList.remove('hidden');
+                document.getElementById('nav-time').classList.replace('tab-active', 'tab-inactive');
+                document.getElementById('nav-mess').classList.replace('tab-inactive', 'tab-active');
+                if(!messData) fetchMessData();
+                renderMessMenu();
+            }
+        }
+
+        window.toggleProfileMenu = () => {
+            const menu = document.getElementById('profile-popover');
+            menu.classList.toggle('hidden');
+        }
+
+        window.handleLogout = () => {
+            signOut(auth).then(() => {
+                document.getElementById('app-screen').classList.add('hidden');
+                document.getElementById('auth-screen').classList.remove('hidden');
+                document.getElementById('profile-popover').classList.add('hidden');
+            });
+        }
+        
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('profile-popover');
+            const btn = document.getElementById('profile-btn');
+            if (!menu.classList.contains('hidden') && !menu.contains(e.target) && !btn.contains(e.target)) {
+                menu.classList.add('hidden');
+            }
+        });
+
+        document.getElementById('login-btn').addEventListener('click', () => {
+            signInWithPopup(auth, provider).then(() => {
+                document.getElementById('auth-screen').classList.add('hidden');
+                document.getElementById('app-screen').classList.remove('hidden');
+            });
+        });
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                document.getElementById('auth-screen').classList.add('hidden');
+                document.getElementById('app-screen').classList.remove('hidden');
+                const snap = await getDoc(doc(db, "users", user.uid));
+                if (snap.exists()) userCourses = snap.data().courses || {};
+                renderTimetable();
+                fetchMessData();
+                const pref = localStorage.getItem('messPref');
+                if(pref) document.getElementById('mess-category-select').value = pref;
+            }
+        });
+        
+        window.handleMessChange = () => {
+             localStorage.setItem('messPref', document.getElementById('mess-category-select').value);
+             renderMessMenu();
+        }
+    </script>
+</head>
+<body class="bg-gray-50 dark:bg-[#0f172a] text-gray-800 dark:text-gray-100 pb-28 font-sans antialiased transition-colors duration-300">
+
+    <div id="auth-screen" class="fixed inset-0 z-50 bg-white dark:bg-[#0f172a] flex flex-col items-center justify-center p-6">
+        <div class="bg-indigo-600 p-4 rounded-3xl mb-6 shadow-xl shadow-indigo-200 dark:shadow-none">
+            <ion-icon name="school" class="text-4xl text-white"></ion-icon>
+        </div>
+        <h1 class="text-3xl font-extrabold text-gray-900 dark:text-white">UniTime</h1>
+        <p class="text-gray-500 dark:text-gray-400 mb-8 mt-2">Your campus life, sorted.</p>
+        <button id="login-btn" class="w-full max-w-xs bg-gray-900 dark:bg-white dark:text-gray-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg hover:scale-105 transition-transform">
+            <ion-icon name="logo-google"></ion-icon> Sign in with Google
+        </button>
+    </div>
+
+    <div id="app-screen" class="hidden">
+        
+        <header class="bg-white/90 dark:bg-[#1e293b]/90 backdrop-blur sticky top-0 z-30 border-b border-gray-100 dark:border-gray-700 px-6 py-4 flex justify-between items-center transition-colors">
+            <h1 class="text-xl font-extrabold text-gray-900 dark:text-white">UniTime</h1>
+            <div class="flex items-center gap-3">
+                <button id="install-btn" onclick="installPWA()" class="hidden flex items-center gap-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-3 py-2 rounded-lg text-sm font-bold hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition">
+                    <ion-icon name="download-outline" class="text-lg"></ion-icon>
+                    <span class="hidden sm:inline">Download App</span>
+                </button>
+                <button onclick="toggleTheme()" class="w-10 h-10 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition">
+                    <ion-icon name="moon-outline" class="block dark:hidden text-xl"></ion-icon>
+                    <ion-icon name="sunny-outline" class="hidden dark:block text-xl text-yellow-400"></ion-icon>
+                </button>
+                <div class="relative">
+                    <button id="profile-btn" onclick="toggleProfileMenu()" class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-300 hover:ring-2 hover:ring-indigo-500 transition">
+                        <ion-icon name="person" class="text-lg"></ion-icon>
+                    </button>
+                    <div id="profile-popover" class="hidden absolute right-0 top-12 w-64 bg-white dark:bg-[#1e293b] rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 p-4 z-50 animate-fade-in-up origin-top-right">
+                        <p class="text-xs text-gray-400 dark:text-gray-500 font-bold uppercase tracking-wider mb-3">MAMBA MEDIA</p>
+                        <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg mb-4">
+                            <p class="text-sm italic text-gray-600 dark:text-gray-300 leading-relaxed">"Made with all due hate to the fact that we need to create our own timetable every semester."</p>
+                        </div>
+                        <button onclick="handleLogout()" class="w-full flex items-center justify-center gap-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 py-2 rounded-lg text-sm font-bold hover:bg-red-100 dark:hover:bg-red-900/40 transition">
+                            <ion-icon name="log-out-outline"></ion-icon> Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div id="timetable-view" class="p-6 page-transition">
+            <div id="sticky-hero-wrapper" class="sticky sticky-header-offset z-20 bg-gray-50 dark:bg-[#0f172a] -mx-6 px-6 pt-2 pb-1 transition-colors">
+                <div id="hero-card-container">
+                    <div class="animate-pulse bg-gray-200 dark:bg-gray-700 h-48 rounded-2xl mb-2"></div>
+                </div>
+            </div>
+            
+            <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-4 mt-4">Today's Schedule</h3>
+            <div id="timetable-list"></div>
+
+            <button onclick="toggleModal()" class="fixed bottom-28 right-6 bg-black dark:bg-indigo-600 text-white w-14 h-14 rounded-full shadow-2xl flex items-center justify-center text-3xl hover:scale-105 transition-transform z-40">
+                <ion-icon name="add"></ion-icon>
+            </button>
+        </div>
+
+        <div id="mess-view" class="hidden p-6 page-transition">
+            <div class="sticky sticky-header-offset z-20 bg-gray-50 dark:bg-[#0f172a] -mx-6 px-6 pt-2 pb-4 transition-colors">
+                <select id="mess-category-select" onchange="handleMessChange()" class="w-full bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 font-bold text-gray-700 dark:text-gray-200 mb-3 focus:ring-2 focus:ring-indigo-500 outline-none appearance-none transition-colors shadow-sm">
+                    <option value="South_Veg">South Veg</option>
+                    <option value="North_Veg">North Veg</option>
+                    <option value="South_Non_Veg">South Non-Veg</option>
+                    <option value="North_Non_Veg">North Non-Veg</option>
+                    <option value="Unified_Veg">Unified Veg</option>
+                    <option value="Unified_Non_Veg">Unified Non-Veg</option>
+                    <option value="North_Veg_No_Onion_Garlic">North Veg (No O/G)</option>
+                </select>
+
+                <div class="flex items-center justify-between bg-white dark:bg-[#1e293b] rounded-xl p-2 shadow-sm border border-gray-100 dark:border-gray-700 transition-colors">
+                    <button onclick="toggleMessDay(-1)" class="w-10 h-10 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg"><ion-icon name="chevron-back"></ion-icon></button>
+                    <span id="mess-day-display" class="font-bold text-indigo-600 dark:text-indigo-400">Today</span>
+                    <button onclick="toggleMessDay(1)" class="w-10 h-10 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg"><ion-icon name="chevron-forward"></ion-icon></button>
+                </div>
+            </div>
+
+            <div id="mess-list" class="mt-2"></div>
+        </div>
+
+        <nav class="fixed bottom-6 left-6 right-6 h-16 bg-white/90 dark:bg-[#1e293b]/90 backdrop-blur-md border border-indigo-100 dark:border-gray-700 rounded-2xl shadow-2xl flex justify-around items-center z-50 transition-all">
+            <button onclick="switchTab('timetable')" class="flex flex-col items-center gap-1 w-16 tab-active transition-all duration-300" id="nav-time">
+                <ion-icon name="calendar" class="text-xl"></ion-icon>
+                <span class="text-[10px] font-bold">Time</span>
+            </button>
+            <button onclick="switchTab('mess')" class="flex flex-col items-center gap-1 w-16 tab-inactive transition-all duration-300" id="nav-mess">
+                <ion-icon name="restaurant" class="text-xl"></ion-icon>
+                <span class="text-[10px] font-bold">Mess</span>
+            </button>
+        </nav>
+
+        <div id="add-modal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center">
+            <div class="bg-white dark:bg-[#1e293b] w-full h-[90vh] sm:h-auto sm:max-w-md sm:rounded-2xl rounded-t-2xl flex flex-col shadow-2xl animate-fade-in-up transition-colors">
+                <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
+                    <h2 class="font-bold text-lg dark:text-white">Manage Courses</h2>
+                    <button onclick="toggleModal()" class="text-gray-400 hover:text-gray-800 dark:hover:text-white"><ion-icon name="close" class="text-2xl"></ion-icon></button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4" id="courses-container"></div>
+                <div class="p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex gap-3">
+                    <button onclick="addCourseRow()" class="flex-1 py-3 border border-gray-300 dark:border-gray-600 rounded-xl font-bold text-gray-600 dark:text-gray-300">Add Row</button>
+                    <button onclick="saveAllCourses()" class="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg">Save</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <style>
+        @keyframes fadeInUp { from { transform: translateY(10); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .animate-fade-in-up { animation: fadeInUp 0.2s ease-out; }
+    </style>
+</body>
+</html>
