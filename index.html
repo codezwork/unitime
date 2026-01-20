@@ -218,15 +218,23 @@
 
         // --- MESS LOGIC ---
         function calculateMessWeek() {
-            const anchorDate = new Date("2025-09-01"); 
+            // UPDATED: We set the anchor to a known "Week A" start date relative to today.
+            // Since today (Jan 20) is Week B, we set the anchor to last Monday (Jan 12).
+            const anchorDate = new Date("2026-01-12"); 
             const today = new Date();
+            
+            // Calculate difference in milliseconds
             const diffTime = Math.abs(today - anchorDate);
+            
+            // Convert to days
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            
+            // Convert to weeks
             const diffWeeks = Math.floor(diffDays / 7);
+            
             const cycle = ["A", "B", "C", "D"];
             return cycle[diffWeeks % 4];
         }
-
         async function fetchMessData() {
             const menuId = "2025-09-01"; 
             try {
