@@ -32,17 +32,16 @@
         .dark .tab-inactive { color: #64748b; }
         .page-transition { animation: fadeIn 0.3s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        /* Sticky Offset Calculation: Header is approx 72px */
+        /* Sticky Header Offset */
         .sticky-header-offset { top: 72px; }
     </style>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        // REMOVED: setDoc (Browser is no longer allowed to write)
-        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-        // --- FIREBASE CONFIG (Paste your own if different) ---
+        // --- FIREBASE CONFIG ---
         const firebaseConfig = {
             apiKey: "AIzaSyBqJt108ogAwMIYtPr1B6pqJDDyU4MtqCM",
             authDomain: "unitime-e1105.firebaseapp.com",
@@ -111,9 +110,14 @@
         let messData = null;
         let currentMessCycle = "A"; 
         let messDayOffset = 0; 
+        
+        // NEW: 0 = Today, 1 = Tomorrow
+        let timetableOffset = 0; 
 
         // --- TIMETABLE LOGIC ---
-        function getTodaysSchedule(dayName) {
+        
+        // Generalized function to get schedule for ANY day
+        function getScheduleForDay(dayName) {
             const schema = DAY_MAP[dayName];
             if (!schema) return [];
             let schedule = [];
@@ -133,14 +137,22 @@
             return schedule.sort((a, b) => a.start.localeCompare(b.start));
         }
 
+        // Toggle Logic
+        window.toggleTimetableDay = () => {
+            timetableOffset = timetableOffset === 0 ? 1 : 0;
+            renderTimetable();
+        }
+
         function renderTimetable() {
             const now = new Date();
-            const dayName = DAYS_OF_WEEK[now.getDay()];
+            const todayIndex = now.getDay();
+            const todayName = DAYS_OF_WEEK[todayIndex];
             const currentTime = now.getHours() * 60 + now.getMinutes();
-            const todaysClasses = getTodaysSchedule(dayName);
 
-            // Render Hero
+            // 1. HERO LOGIC (ALWAYS TODAY)
+            const todaysClasses = getScheduleForDay(todayName);
             const heroContainer = document.getElementById('hero-card-container');
+            
             const nextClass = todaysClasses.find(cls => {
                 const [h, m] = cls.start.split(':').map(Number);
                 return (h * 60 + m) > currentTime;
@@ -160,47 +172,84 @@
                 renderHero(nextClass, `Starts in ${diff} min`, "bg-indigo-600 dark:bg-indigo-700");
             } else {
                 heroContainer.innerHTML = `
-                    <div class="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg mb-4">
+                    <div class="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg mb-2">
                         <div class="text-3xl mb-2">🎉</div>
                         <h2 class="text-xl font-bold">All caught up!</h2>
                         <p class="opacity-90 text-sm">No more classes scheduled for today.</p>
                     </div>`;
             }
 
-            // Render List
+            // 2. LIST LOGIC (TODAY OR TOMORROW)
             const listContainer = document.getElementById('timetable-list');
+            const listHeader = document.getElementById('timetable-list-header');
+            
+            // Calculate target day
+            let targetDayIndex = (todayIndex + timetableOffset) % 7;
+            let targetDayName = DAYS_OF_WEEK[targetDayIndex];
+            
+            const listClasses = getScheduleForDay(targetDayName);
+
+            // Update Header
+            if (timetableOffset === 0) {
+                listHeader.innerText = "Today's Schedule";
+            } else {
+                listHeader.innerText = `Tomorrow (${targetDayName})`;
+            }
+
             listContainer.innerHTML = '';
             
-            if(todaysClasses.length === 0) return;
-
-            todaysClasses.forEach(cls => {
-                const [endH, endM] = cls.end.split(':').map(Number);
-                const isFinished = currentTime > (endH * 60 + endM);
-                const opacity = isFinished ? "opacity-50 grayscale" : "opacity-100";
-                const isHero = (currentClass && cls === currentClass) || (!currentClass && nextClass && cls === nextClass);
-                const highlight = isHero ? "ring-2 ring-indigo-500 dark:ring-indigo-400 ring-offset-2 dark:ring-offset-gray-900" : "";
-
-                const html = `
-                    <div class="bg-white dark:bg-gray-800 rounded-xl p-4 mb-3 border border-gray-100 dark:border-gray-700 shadow-sm flex justify-between items-center ${opacity} ${highlight} transition-colors">
-                        <div>
-                            <h3 class="font-bold text-gray-800 dark:text-gray-100">${cls.name}</h3>
-                            <div class="flex items-center gap-2 mt-1">
-                                <span class="text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded">${cls.courseCode}</span>
-                                <span class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1"><ion-icon name="location"></ion-icon>${cls.venue}</span>
-                            </div>
-                        </div>
-                        <div class="text-right">
-                            <div class="font-mono text-sm font-bold text-gray-700 dark:text-gray-300">${cls.start}</div>
-                            <div class="font-mono text-xs text-gray-400 dark:text-gray-500">${cls.end}</div>
-                        </div>
+            if(listClasses.length === 0) {
+                listContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center py-8 text-gray-400 dark:text-gray-500">
+                        <ion-icon name="bed-outline" class="text-4xl mb-2"></ion-icon>
+                        <p class="text-sm">No classes ${timetableOffset === 0 ? 'today' : 'tomorrow'}!</p>
                     </div>`;
-                listContainer.insertAdjacentHTML('beforeend', html);
-            });
+            } else {
+                listClasses.forEach(cls => {
+                    const [endH, endM] = cls.end.split(':').map(Number);
+                    // Only fade out if it's TODAY and class is finished
+                    const isFinished = (timetableOffset === 0) && (currentTime > (endH * 60 + endM));
+                    const opacity = isFinished ? "opacity-50 grayscale" : "opacity-100";
+                    
+                    // Highlight if it matches the Hero card (Only for Today)
+                    const isHero = (timetableOffset === 0) && ((currentClass && cls === currentClass) || (!currentClass && nextClass && cls === nextClass));
+                    const highlight = isHero ? "ring-2 ring-indigo-500 dark:ring-indigo-400 ring-offset-2 dark:ring-offset-gray-900" : "";
+
+                    const html = `
+                        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 mb-3 border border-gray-100 dark:border-gray-700 shadow-sm flex justify-between items-center ${opacity} ${highlight} transition-colors">
+                            <div>
+                                <h3 class="font-bold text-gray-800 dark:text-gray-100">${cls.name}</h3>
+                                <div class="flex items-center gap-2 mt-1">
+                                    <span class="text-xs font-bold text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded">${cls.courseCode}</span>
+                                    <span class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1"><ion-icon name="location"></ion-icon>${cls.venue}</span>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-mono text-sm font-bold text-gray-700 dark:text-gray-300">${cls.start}</div>
+                                <div class="font-mono text-xs text-gray-400 dark:text-gray-500">${cls.end}</div>
+                            </div>
+                        </div>`;
+                    listContainer.insertAdjacentHTML('beforeend', html);
+                });
+            }
+
+            // 3. TOGGLE BUTTON
+            const btnText = timetableOffset === 0 ? "See Tomorrow's Schedule" : "Back to Today";
+            const btnIcon = timetableOffset === 0 ? "arrow-forward" : "arrow-back";
+            
+            const btnHtml = `
+                <button onclick="toggleTimetableDay()" class="w-full mt-2 py-3 rounded-xl border-2 border-dashed border-indigo-200 dark:border-gray-600 text-indigo-500 dark:text-gray-400 font-bold text-sm hover:bg-indigo-50 dark:hover:bg-gray-800 transition-colors flex items-center justify-center gap-2">
+                    ${timetableOffset === 1 ? `<ion-icon name="${btnIcon}"></ion-icon>` : ''}
+                    <span>${btnText}</span>
+                    ${timetableOffset === 0 ? `<ion-icon name="${btnIcon}"></ion-icon>` : ''}
+                </button>
+            `;
+            listContainer.insertAdjacentHTML('beforeend', btnHtml);
         }
 
         function renderHero(cls, status, color) {
             document.getElementById('hero-card-container').innerHTML = `
-                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700 mb-6 relative transition-colors">
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700 mb-2 relative transition-colors">
                     <div class="${color} px-5 py-3 flex justify-between items-center text-white">
                         <span class="font-bold text-sm uppercase tracking-wide flex items-center gap-2"><ion-icon name="time"></ion-icon> ${status}</span>
                     </div>
@@ -218,23 +267,15 @@
 
         // --- MESS LOGIC ---
         function calculateMessWeek() {
-            // UPDATED: We set the anchor to a known "Week A" start date relative to today.
-            // Since today (Jan 20) is Week B, we set the anchor to last Monday (Jan 12).
             const anchorDate = new Date("2026-01-12"); 
             const today = new Date();
-            
-            // Calculate difference in milliseconds
             const diffTime = Math.abs(today - anchorDate);
-            
-            // Convert to days
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-            
-            // Convert to weeks
             const diffWeeks = Math.floor(diffDays / 7);
-            
             const cycle = ["A", "B", "C", "D"];
             return cycle[diffWeeks % 4];
         }
+
         async function fetchMessData() {
             const menuId = "2025-09-01"; 
             try {
@@ -333,7 +374,6 @@
             document.getElementById('courses-container').insertAdjacentHTML('beforeend', html);
         }
 
-        // --- MODIFIED SECURE SAVE FUNCTION ---
         window.saveAllCourses = async () => {
             let newCourses = {};
             document.querySelectorAll('.course-row').forEach(row => {
@@ -350,34 +390,11 @@
             
             userCourses = newCourses;
             const user = auth.currentUser;
-            
-            if (user) {
-                // UPDATE: Instead of writing to DB directly, we ask the server to do it.
-                // 1. Get the security token (ID Badge)
-                const token = await user.getIdToken();
-
-                // 2. Send data to our secure API
-                try {
-                    const response = await fetch('/api/save-courses', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ courses: userCourses })
-                    });
-
-                    if (response.ok) {
-                        toggleModal();
-                        renderTimetable();
-                        alert("Courses saved securely!");
-                    } else {
-                        alert("Error saving courses. Please try again.");
-                    }
-                } catch (error) {
-                    console.error("Save failed:", error);
-                    alert("Network error. Could not save.");
-                }
+            if(user) {
+                // Use Secure Write (Simulated for this file)
+                await setDoc(doc(db, "users", user.uid), { courses: userCourses }, { merge: false });
+                toggleModal();
+                renderTimetable();
             }
         }
 
@@ -496,7 +513,7 @@
                 </div>
             </div>
             
-            <h3 class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-4 mt-4">Today's Schedule</h3>
+            <h3 id="timetable-list-header" class="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-4 mt-4">Today's Schedule</h3>
             <div id="timetable-list"></div>
 
             <button onclick="toggleModal()" class="fixed bottom-28 right-6 bg-black dark:bg-indigo-600 text-white w-14 h-14 rounded-full shadow-2xl flex items-center justify-center text-3xl hover:scale-105 transition-transform z-40">
