@@ -18,6 +18,27 @@
             }
         }
     </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('Service Worker registered!', reg))
+                    .catch(err => console.log('Service Worker registration failed:', err));
+            });
+        }
+        
+        // Handle the "Shortcuts" logic from the manifest
+        // This checks if the user opened the app via the "Mess" shortcut
+        window.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const view = urlParams.get('view');
+            if (view === 'mess') {
+                // Function from your existing code to switch tabs
+                // We use a small timeout to ensure DOM is ready
+                setTimeout(() => switchTab('mess'), 100);
+            }
+        });
+    </script>
     <meta name="theme-color" content="#4F46E5">
     
     <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
