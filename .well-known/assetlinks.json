@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.vercel.unitime_iitm_test2.twa",
+        "sha256_cert_fingerprints": ["E5:ED:1A:80:F4:39:F4:AC:14:56:AD:8D:30:51:F6:24:18:FB:DA:CA:22:1B:99:3E:78:8C:75:1A:D1:65:41:3E"]
+      }
+    }]
