@@ -18,6 +18,7 @@
             }
         }
     </script>
+    
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
@@ -27,18 +28,15 @@
             });
         }
         
-        // Handle the "Shortcuts" logic from the manifest
-        // This checks if the user opened the app via the "Mess" shortcut
         window.addEventListener('DOMContentLoaded', () => {
             const urlParams = new URLSearchParams(window.location.search);
             const view = urlParams.get('view');
             if (view === 'mess') {
-                // Function from your existing code to switch tabs
-                // We use a small timeout to ensure DOM is ready
                 setTimeout(() => switchTab('mess'), 100);
             }
         });
     </script>
+
     <meta name="theme-color" content="#4F46E5">
     
     <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
@@ -53,7 +51,6 @@
         .dark .tab-inactive { color: #64748b; }
         .page-transition { animation: fadeIn 0.3s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        /* Sticky Header Offset */
         .sticky-header-offset { top: 72px; }
     </style>
 
@@ -132,7 +129,7 @@
         let currentMessCycle = "A"; 
         let messDayOffset = 0; 
         
-        // NEW: 0 = Today, 1 = Tomorrow
+        // NEW STATE: 0 = Today, 1 = Tomorrow
         let timetableOffset = 0; 
 
         // --- TIMETABLE LOGIC ---
@@ -158,7 +155,7 @@
             return schedule.sort((a, b) => a.start.localeCompare(b.start));
         }
 
-        // Toggle Logic
+        // Toggle Logic for "See Tomorrow"
         window.toggleTimetableDay = () => {
             timetableOffset = timetableOffset === 0 ? 1 : 0;
             renderTimetable();
@@ -171,6 +168,7 @@
             const currentTime = now.getHours() * 60 + now.getMinutes();
 
             // 1. HERO LOGIC (ALWAYS TODAY)
+            // The hero card ignores the offset because you always want to know what to do NOW.
             const todaysClasses = getScheduleForDay(todayName);
             const heroContainer = document.getElementById('hero-card-container');
             
@@ -204,13 +202,13 @@
             const listContainer = document.getElementById('timetable-list');
             const listHeader = document.getElementById('timetable-list-header');
             
-            // Calculate target day
+            // Calculate target day based on offset
             let targetDayIndex = (todayIndex + timetableOffset) % 7;
             let targetDayName = DAYS_OF_WEEK[targetDayIndex];
             
             const listClasses = getScheduleForDay(targetDayName);
 
-            // Update Header
+            // Update Header Text
             if (timetableOffset === 0) {
                 listHeader.innerText = "Today's Schedule";
             } else {
@@ -228,7 +226,8 @@
             } else {
                 listClasses.forEach(cls => {
                     const [endH, endM] = cls.end.split(':').map(Number);
-                    // Only fade out if it's TODAY and class is finished
+                    // Only dim past classes if we are looking at TODAY. 
+                    // If looking at tomorrow, everything is in the future.
                     const isFinished = (timetableOffset === 0) && (currentTime > (endH * 60 + endM));
                     const opacity = isFinished ? "opacity-50 grayscale" : "opacity-100";
                     
@@ -254,7 +253,7 @@
                 });
             }
 
-            // 3. TOGGLE BUTTON
+            // 3. RENDER TOGGLE BUTTON
             const btnText = timetableOffset === 0 ? "See Tomorrow's Schedule" : "Back to Today";
             const btnIcon = timetableOffset === 0 ? "arrow-forward" : "arrow-back";
             
@@ -412,7 +411,6 @@
             userCourses = newCourses;
             const user = auth.currentUser;
             if(user) {
-                // Use Secure Write (Simulated for this file)
                 await setDoc(doc(db, "users", user.uid), { courses: userCourses }, { merge: false });
                 toggleModal();
                 renderTimetable();
@@ -447,6 +445,8 @@
                 document.getElementById('app-screen').classList.add('hidden');
                 document.getElementById('auth-screen').classList.remove('hidden');
                 document.getElementById('profile-popover').classList.add('hidden');
+                document.getElementById('splash-screen').classList.add('hidden'); // Ensure splash is hidden
+                document.getElementById('auth-screen').classList.remove('hidden'); 
             });
         }
         
@@ -460,21 +460,39 @@
 
         document.getElementById('login-btn').addEventListener('click', () => {
             signInWithPopup(auth, provider).then(() => {
-                document.getElementById('auth-screen').classList.add('hidden');
-                document.getElementById('app-screen').classList.remove('hidden');
+                // Auth listener handles the rest
             });
         });
 
+        // --- AUTH LISTENER WITH SPLASH SCREEN LOGIC ---
         onAuthStateChanged(auth, async (user) => {
+            const splash = document.getElementById('splash-screen');
+            const authScreen = document.getElementById('auth-screen');
+            const appScreen = document.getElementById('app-screen');
+
             if (user) {
-                document.getElementById('auth-screen').classList.add('hidden');
-                document.getElementById('app-screen').classList.remove('hidden');
+                // 1. Hide Auth Screen (it might be behind splash)
+                authScreen.classList.add('hidden');
+                // 2. Show App Shell
+                appScreen.classList.remove('hidden');
+                
+                // 3. Load Data
                 const snap = await getDoc(doc(db, "users", user.uid));
                 if (snap.exists()) userCourses = snap.data().courses || {};
+                
                 renderTimetable();
                 fetchMessData();
+                
                 const pref = localStorage.getItem('messPref');
                 if(pref) document.getElementById('mess-category-select').value = pref;
+
+                // 4. Hide Splash after a tiny delay
+                setTimeout(() => splash.classList.add('hidden'), 300);
+            } else {
+                // No user: Show Auth, Hide App, Hide Splash
+                appScreen.classList.add('hidden');
+                authScreen.classList.remove('hidden');
+                splash.classList.add('hidden');
             }
         });
         
@@ -486,7 +504,14 @@
 </head>
 <body class="bg-gray-50 dark:bg-[#0f172a] text-gray-800 dark:text-gray-100 pb-28 font-sans antialiased transition-colors duration-300">
 
-    <div id="auth-screen" class="fixed inset-0 z-50 bg-white dark:bg-[#0f172a] flex flex-col items-center justify-center p-6">
+    <div id="splash-screen" class="fixed inset-0 z-[60] bg-indigo-600 flex flex-col items-center justify-center p-6 transition-opacity duration-300">
+        <div class="animate-bounce">
+            <ion-icon name="school" class="text-6xl text-white"></ion-icon>
+        </div>
+        <h1 class="text-3xl font-extrabold text-white mt-4 tracking-wider">UniTime</h1>
+    </div>
+
+    <div id="auth-screen" class="hidden fixed inset-0 z-50 bg-white dark:bg-[#0f172a] flex flex-col items-center justify-center p-6">
         <div class="mb-6">
             <img src="logos/icon-512.png" alt="UniTime Logo" class="w-24 h-24 object-contain">
         </div>
