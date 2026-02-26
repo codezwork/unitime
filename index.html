@@ -303,7 +303,14 @@
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     messData = docSnap.data().Messmenu;
-                    currentMessCycle = calculateMessWeek();
+                    
+                    // Prioritize user's saved cycle, otherwise fallback to auto-calculation
+                    currentMessCycle = localStorage.getItem('messCyclePref') || calculateMessWeek();
+                    
+                    // Sync the UI dropdown with the current active cycle
+                    const cycleSelect = document.getElementById('mess-cycle-select');
+                    if(cycleSelect) cycleSelect.value = currentMessCycle;
+
                     renderMessMenu();
                 }
             } catch (e) { console.error(e); }
@@ -445,7 +452,7 @@
                 document.getElementById('app-screen').classList.add('hidden');
                 document.getElementById('auth-screen').classList.remove('hidden');
                 document.getElementById('profile-popover').classList.add('hidden');
-                document.getElementById('splash-screen').classList.add('hidden'); // Ensure splash is hidden
+                document.getElementById('splash-screen').classList.add('hidden'); 
                 document.getElementById('auth-screen').classList.remove('hidden'); 
             });
         }
@@ -471,12 +478,9 @@
             const appScreen = document.getElementById('app-screen');
 
             if (user) {
-                // 1. Hide Auth Screen (it might be behind splash)
                 authScreen.classList.add('hidden');
-                // 2. Show App Shell
                 appScreen.classList.remove('hidden');
                 
-                // 3. Load Data
                 const snap = await getDoc(doc(db, "users", user.uid));
                 if (snap.exists()) userCourses = snap.data().courses || {};
                 
@@ -486,10 +490,8 @@
                 const pref = localStorage.getItem('messPref');
                 if(pref) document.getElementById('mess-category-select').value = pref;
 
-                // 4. Hide Splash after a tiny delay
                 setTimeout(() => splash.classList.add('hidden'), 300);
             } else {
-                // No user: Show Auth, Hide App, Hide Splash
                 appScreen.classList.add('hidden');
                 authScreen.classList.remove('hidden');
                 splash.classList.add('hidden');
@@ -499,6 +501,13 @@
         window.handleMessChange = () => {
              localStorage.setItem('messPref', document.getElementById('mess-category-select').value);
              renderMessMenu();
+        }
+
+        // NEW: Handle the cycle override
+        window.handleCycleChange = () => {
+            currentMessCycle = document.getElementById('mess-cycle-select').value;
+            localStorage.setItem('messCyclePref', currentMessCycle);
+            renderMessMenu();
         }
     </script>
 </head>
@@ -569,15 +578,25 @@
 
         <div id="mess-view" class="hidden p-6 page-transition">
             <div class="sticky sticky-header-offset z-20 bg-gray-50 dark:bg-[#0f172a] -mx-6 px-6 pt-2 pb-4 transition-colors">
-                <select id="mess-category-select" onchange="handleMessChange()" class="w-full bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 font-bold text-gray-700 dark:text-gray-200 mb-3 focus:ring-2 focus:ring-indigo-500 outline-none appearance-none transition-colors shadow-sm">
-                    <option value="South_Veg">South Veg</option>
-                    <option value="North_Veg">North Veg</option>
-                    <option value="South_Non_Veg">South Non-Veg</option>
-                    <option value="North_Non_Veg">North Non-Veg</option>
-                    <option value="Unified_Veg">Unified Veg</option>
-                    <option value="Unified_Non_Veg">Unified Non-Veg</option>
-                    <option value="North_Veg_No_Onion_Garlic">North Veg (No O/G)</option>
-                </select>
+                
+                <div class="flex gap-2 mb-3">
+                    <select id="mess-category-select" onchange="handleMessChange()" class="flex-1 bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 font-bold text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-indigo-500 outline-none appearance-none transition-colors shadow-sm">
+                        <option value="South_Veg">South Veg</option>
+                        <option value="North_Veg">North Veg</option>
+                        <option value="South_Non_Veg">South Non-Veg</option>
+                        <option value="North_Non_Veg">North Non-Veg</option>
+                        <option value="Unified_Veg">Unified Veg</option>
+                        <option value="Unified_Non_Veg">Unified Non-Veg</option>
+                        <option value="North_Veg_No_Onion_Garlic">North Veg (No O/G)</option>
+                    </select>
+
+                    <select id="mess-cycle-select" onchange="handleCycleChange()" class="w-28 bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-gray-700 rounded-xl px-2 py-3 font-bold text-gray-700 dark:text-gray-200 focus:ring-2 focus:ring-indigo-500 outline-none appearance-none transition-colors shadow-sm text-center">
+                        <option value="A">Week A</option>
+                        <option value="B">Week B</option>
+                        <option value="C">Week C</option>
+                        <option value="D">Week D</option>
+                    </select>
+                </div>
 
                 <div class="flex items-center justify-between bg-white dark:bg-[#1e293b] rounded-xl p-2 shadow-sm border border-gray-100 dark:border-gray-700 transition-colors">
                     <button onclick="toggleMessDay(-1)" class="w-10 h-10 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg"><ion-icon name="chevron-back"></ion-icon></button>
