@@ -1,4 +1,4 @@
-const CACHE_NAME = 'unitime-v2'; // Bump this version (v3, v4) to force a full re-cache
+const CACHE_NAME = 'unitime-v3'; // Bump this version (v3, v4) to force a full re-cache
 const FILES_TO_CACHE = [
   './',
   './index.html',

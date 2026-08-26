@@ -23,7 +23,10 @@
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('Service Worker registered!', reg))
+                    .then(reg => {
+                        console.log('Service Worker registered!', reg);
+                        reg.update(); // Proactively check for cache updates
+                    })
                     .catch(err => console.log('Service Worker registration failed:', err));
             });
         }
@@ -650,35 +653,57 @@
             }
         };
 
-        // --- AUTH LISTENER WITH NON-BLOCKING INSTANT SPLASH DISMISSAL ---
+        // --- INSTANT OPTIMISTIC BOOTSTRAP (Crucial for iOS Standalone PWA cold starts) ---
+        const initOptimisticUI = () => {
+            const authScreen = document.getElementById('auth-screen');
+            const appScreen = document.getElementById('app-screen');
+            if (localStorage.getItem('isLoggedIn') === 'true') {
+                if (authScreen) authScreen.classList.add('hidden');
+                if (appScreen) appScreen.classList.remove('hidden');
+                
+                const cachedPhoto = localStorage.getItem('cachedPhotoURL');
+                if (cachedPhoto) updateProfileAvatar(cachedPhoto);
+                
+                renderTimetable();
+                fetchMessData();
+                
+                const pref = localStorage.getItem('messPref');
+                if (pref && document.getElementById('mess-category-select')) {
+                    document.getElementById('mess-category-select').value = pref;
+                }
+                
+                // Immediately hide splash on mobile (1 bounce max / 200ms)
+                setTimeout(hideSplash, 200);
+            }
+        };
+        initOptimisticUI();
+
+        // --- AUTH LISTENER (Background token refresh & Firestore sync) ---
         onAuthStateChanged(auth, (user) => {
             const authScreen = document.getElementById('auth-screen');
             const appScreen = document.getElementById('app-screen');
 
             if (user) {
                 localStorage.setItem('isLoggedIn', 'true');
-                authScreen.classList.add('hidden');
-                appScreen.classList.remove('hidden');
+                if (authScreen) authScreen.classList.add('hidden');
+                if (appScreen) appScreen.classList.remove('hidden');
                 
-                // 1. Immediately render avatar & cached data
                 if (user.photoURL) {
                     localStorage.setItem('cachedPhotoURL', user.photoURL);
                     updateProfileAvatar(user.photoURL);
-                } else {
-                    const cachedPhoto = localStorage.getItem('cachedPhotoURL');
-                    if (cachedPhoto) updateProfileAvatar(cachedPhoto);
                 }
 
                 renderTimetable();
                 fetchMessData();
                 
                 const pref = localStorage.getItem('messPref');
-                if(pref) document.getElementById('mess-category-select').value = pref;
+                if (pref && document.getElementById('mess-category-select')) {
+                    document.getElementById('mess-category-select').value = pref;
+                }
 
-                // 2. Dismiss splash screen instantly with smooth fade (max 1 bounce)
                 setTimeout(hideSplash, 200);
 
-                // 3. Silently sync latest data from Firestore in the background
+                // Silently sync latest data from Firestore in background
                 getDoc(doc(db, "users", user.uid)).then((snap) => {
                     if (snap.exists()) {
                         const cloudCourses = snap.data().courses || {};
@@ -694,8 +719,8 @@
 
             } else {
                 localStorage.removeItem('isLoggedIn');
-                appScreen.classList.add('hidden');
-                authScreen.classList.remove('hidden');
+                if (appScreen) appScreen.classList.add('hidden');
+                if (authScreen) authScreen.classList.remove('hidden');
                 hideSplash();
             }
         });
