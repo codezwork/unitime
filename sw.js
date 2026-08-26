@@ -34,11 +34,14 @@ self.addEventListener('activate', (event) => {
 
 // 3. FETCH: The "Stale-While-Revalidate" Strategy
 self.addEventListener('fetch', (event) => {
-  // Ignore non-GET requests (like Firestore writes)
+  // Only handle http and https requests (ignore chrome-extension, etc.)
+  if (!event.request.url.startsWith('http://') && !event.request.url.startsWith('https://')) return;
+
+  // Ignore non-GET requests (like Firestore writes and API posts)
   if (event.request.method !== 'GET') return;
 
-  // Ignore Firestore API calls (let Firebase SDK handle its own persistence)
-  if (event.request.url.includes('firestore.googleapis.com')) return;
+  // Ignore API endpoints and Firestore calls
+  if (event.request.url.includes('/api/') || event.request.url.includes('firestore.googleapis.com')) return;
 
   event.respondWith(
     caches.open(CACHE_NAME).then((cache) => {

@@ -424,6 +424,139 @@
             }
         }
 
+        // --- AUTOMATED COURSE IMPORT HANDLERS ---
+        window.handleImageUpload = async (event) => {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+
+            const loader = document.getElementById('course-import-loading');
+            if (loader) loader.classList.remove('hidden');
+
+            try {
+                const base64String = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = (err) => reject(err);
+                    reader.readAsDataURL(file);
+                });
+
+                const response = await fetch('/api/extract-timetable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64String })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    throw new Error(errData.error || errData.message || `Server error: ${response.status}`);
+                }
+
+                const extractedCourses = await response.json();
+                if (!Array.isArray(extractedCourses) || extractedCourses.length === 0) {
+                    alert('No courses could be detected in the uploaded screenshot. Please check the image and try again.');
+                    return;
+                }
+
+                const container = document.getElementById('courses-container');
+                container.innerHTML = '';
+                extractedCourses.forEach(c => {
+                    addCourseRow({
+                        code: c.code || '',
+                        courseCode: c.courseCode || '',
+                        name: c.name || '',
+                        venue: ''
+                    });
+                });
+
+            } catch (err) {
+                console.error('Image parsing error:', err);
+                alert(`Error processing image: ${err.message || 'Failed to extract courses'}`);
+            } finally {
+                if (loader) loader.classList.add('hidden');
+                event.target.value = '';
+            }
+        };
+
+        window.handlePasteTable = async () => {
+            let text = '';
+            try {
+                if (!navigator.clipboard || !navigator.clipboard.readText) {
+                    throw new Error('Clipboard API is not supported in this browser environment.');
+                }
+                text = await navigator.clipboard.readText();
+            } catch (err) {
+                console.warn('Clipboard read failed:', err);
+                alert('Could not access clipboard. Please ensure clipboard permissions are granted in your browser.');
+                return;
+            }
+
+            if (!text || !text.trim()) {
+                alert('Clipboard is empty. Please copy your course registration table text first.');
+                return;
+            }
+
+            const lines = text.split(/\r?\n/);
+            const validSlots = new Set(['A','B','C','D','E','F','G','P','Q','R','S','T','H','M','J','K','L']);
+            const parsedCourses = [];
+
+            for (let rawLine of lines) {
+                let line = rawLine.trim();
+                if (!line) continue;
+
+                // Match standard course codes (e.g. CS1100, MAT101, EE2001, ME3100, ID1200)
+                const courseCodeRegex = /\b([A-Za-z]{2,3}\s?[0-9]{3,4}[A-Za-z]?)\b/;
+                const courseCodeMatch = line.match(courseCodeRegex);
+                if (!courseCodeMatch) continue;
+
+                const courseCode = courseCodeMatch[1].replace(/\s+/g, '').toUpperCase();
+
+                // Find slot
+                let slot = '';
+                // Check if explicit slot syntax exists (e.g. "Slot A", "Slot: A", "Slot-A")
+                const explicitSlotMatch = line.match(/\bSlot\s*[:\-]?\s*([A-Za-z])/i);
+                if (explicitSlotMatch && validSlots.has(explicitSlotMatch[1].toUpperCase())) {
+                    slot = explicitSlotMatch[1].toUpperCase();
+                } else {
+                    // Check individual whitespace/tab/pipe-separated tokens
+                    const tokens = line.split(/[\t|,\s]+/).map(t => t.trim().toUpperCase());
+                    for (const token of tokens) {
+                        if (validSlots.has(token) && token !== courseCode) {
+                            slot = token;
+                            break;
+                        }
+                    }
+                }
+
+                // Clean course name by removing code, slot, credits, status words, and symbols
+                let namePart = line;
+                namePart = namePart.replace(courseCodeMatch[0], ' ');
+                namePart = namePart.replace(/\bSlot\s*[:\-]?\s*[A-Za-z]\b/gi, ' ');
+                if (slot) {
+                    namePart = namePart.replace(new RegExp(`\\b${slot}\\b`, 'g'), ' ');
+                }
+                namePart = namePart.replace(/\b(Core|Elective|Approved|Registered|Enrolled|Credits?)\b/gi, ' ');
+                namePart = namePart.replace(/[|\t\-_:,]/g, ' ');
+                namePart = namePart.replace(/\b\d+(\.\d+)?\b/g, ' '); // remove standalone numbers/credits
+                namePart = namePart.replace(/\s+/g, ' ').trim();
+
+                parsedCourses.push({
+                    code: slot,
+                    courseCode: courseCode,
+                    name: namePart,
+                    venue: ''
+                });
+            }
+
+            if (parsedCourses.length === 0) {
+                alert('No valid course rows could be detected in the pasted text.\nFormat example: "CS1100 Computational Engineering A"');
+                return;
+            }
+
+            const container = document.getElementById('courses-container');
+            container.innerHTML = '';
+            parsedCourses.forEach(c => addCourseRow(c));
+        };
+
         // --- NAVIGATION & INIT ---
         window.switchTab = (tab) => {
             if (tab === 'timetable') {
@@ -620,15 +753,37 @@
         </nav>
 
         <div id="add-modal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center">
-            <div class="bg-white dark:bg-[#1e293b] w-full h-[90vh] sm:h-auto sm:max-w-md sm:rounded-2xl rounded-t-2xl flex flex-col shadow-2xl animate-fade-in-up transition-colors">
+            <div class="bg-white dark:bg-[#1e293b] w-full h-[90vh] sm:h-auto sm:max-w-md sm:rounded-2xl rounded-t-2xl flex flex-col shadow-2xl animate-fade-in-up transition-colors max-h-[90vh]">
                 <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
                     <h2 class="font-bold text-lg dark:text-white">Manage Courses</h2>
                     <button onclick="toggleModal()" class="text-gray-400 hover:text-gray-800 dark:hover:text-white"><ion-icon name="close" class="text-2xl"></ion-icon></button>
                 </div>
+                <!-- Action Bar: Fast Import -->
+                <div class="px-6 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/40">
+                    <div class="flex items-center justify-between gap-2">
+                        <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 py-2.5 px-3 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/60 rounded-xl text-xs font-bold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 active:scale-[0.98] transition-all shadow-sm">
+                            <ion-icon name="cloud-upload" class="text-base"></ion-icon>
+                            <span>Upload Screenshot</span>
+                            <input type="file" id="course-screenshot-input" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+                        </label>
+                        <button type="button" onclick="handlePasteTable()" class="flex-1 flex items-center justify-center gap-2 py-2.5 px-3 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600 rounded-xl text-xs font-bold hover:bg-gray-100 dark:hover:bg-gray-600 active:scale-[0.98] transition-all shadow-sm">
+                            <ion-icon name="clipboard" class="text-base text-gray-500 dark:text-gray-400"></ion-icon>
+                            <span>Paste Text</span>
+                        </button>
+                    </div>
+                    <!-- Loading state indicator -->
+                    <div id="course-import-loading" class="hidden mt-2 p-2 bg-indigo-50 dark:bg-indigo-900/40 border border-indigo-100 dark:border-indigo-800/50 rounded-xl flex items-center justify-center gap-2 text-xs font-medium text-indigo-600 dark:text-indigo-300 animate-pulse">
+                        <svg class="animate-spin h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                        </svg>
+                        <span>Processing timetable with Gemini AI...</span>
+                    </div>
+                </div>
                 <div class="flex-1 overflow-y-auto p-4" id="courses-container"></div>
                 <div class="p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex gap-3">
-                    <button onclick="addCourseRow()" class="flex-1 py-3 border border-gray-300 dark:border-gray-600 rounded-xl font-bold text-gray-600 dark:text-gray-300">Add Row</button>
-                    <button onclick="saveAllCourses()" class="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg">Save</button>
+                    <button onclick="addCourseRow()" class="flex-1 py-3 border border-gray-300 dark:border-gray-600 rounded-xl font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">Add Row</button>
+                    <button onclick="saveAllCourses()" class="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">Save</button>
                 </div>
             </div>
         </div>
