@@ -123,13 +123,25 @@
         };
         const DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-        // --- STATE ---
+        // --- STATE & LOCAL CACHE (Instant 0ms Load) ---
         let userCourses = {}; 
+        try {
+            const cached = localStorage.getItem('cachedCourses');
+            if (cached) userCourses = JSON.parse(cached);
+        } catch (e) {
+            console.warn('Cached courses parse error:', e);
+        }
+
         let messData = null;
-        let currentMessCycle = "A"; 
+        try {
+            const cachedMess = localStorage.getItem('cachedMessData');
+            if (cachedMess) messData = JSON.parse(cachedMess);
+        } catch (e) {
+            console.warn('Cached mess data parse error:', e);
+        }
+
+        let currentMessCycle = localStorage.getItem('messCyclePref') || "A"; 
         let messDayOffset = 0; 
-        
-        // NEW STATE: 0 = Today, 1 = Tomorrow
         let timetableOffset = 0; 
 
         // --- TIMETABLE LOGIC ---
@@ -298,22 +310,27 @@
 
         async function fetchMessData() {
             const menuId = "2025-09-01"; 
+            // 1. Instantly render from cache if available
+            if (messData) {
+                currentMessCycle = localStorage.getItem('messCyclePref') || calculateMessWeek();
+                const cycleSelect = document.getElementById('mess-cycle-select');
+                if(cycleSelect) cycleSelect.value = currentMessCycle;
+                renderMessMenu();
+            }
+
+            // 2. Fetch fresh data in the background (stale-while-revalidate)
             try {
                 const docRef = doc(db, "messmenudetails", menuId);
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     messData = docSnap.data().Messmenu;
-                    
-                    // Prioritize user's saved cycle, otherwise fallback to auto-calculation
+                    localStorage.setItem('cachedMessData', JSON.stringify(messData));
                     currentMessCycle = localStorage.getItem('messCyclePref') || calculateMessWeek();
-                    
-                    // Sync the UI dropdown with the current active cycle
                     const cycleSelect = document.getElementById('mess-cycle-select');
                     if(cycleSelect) cycleSelect.value = currentMessCycle;
-
                     renderMessMenu();
                 }
-            } catch (e) { console.error(e); }
+            } catch (e) { console.error('Background mess data fetch error:', e); }
         }
 
         window.toggleMessDay = (direction) => {
@@ -416,11 +433,17 @@
             });
             
             userCourses = newCourses;
+            localStorage.setItem('cachedCourses', JSON.stringify(userCourses));
+            toggleModal();
+            renderTimetable();
+
             const user = auth.currentUser;
             if(user) {
-                await setDoc(doc(db, "users", user.uid), { courses: userCourses }, { merge: false });
-                toggleModal();
-                renderTimetable();
+                try {
+                    await setDoc(doc(db, "users", user.uid), { courses: userCourses }, { merge: false });
+                } catch(e) {
+                    console.error('Failed to sync courses to Firestore:', e);
+                }
             }
         }
 
@@ -580,13 +603,27 @@
             menu.classList.toggle('hidden');
         }
 
+        window.updateProfileAvatar = (photoURL) => {
+            const container = document.getElementById('profile-avatar-container');
+            if (!container) return;
+            if (photoURL) {
+                container.innerHTML = `<img src="${photoURL}" alt="User Avatar" class="w-full h-full object-cover rounded-full" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<ion-icon name=\\'person\\' class=\\'text-lg\\'></ion-icon>'">`;
+            } else {
+                container.innerHTML = `<ion-icon name="person" class="text-lg"></ion-icon>`;
+            }
+        };
+
         window.handleLogout = () => {
+            localStorage.removeItem('isLoggedIn');
+            localStorage.removeItem('cachedCourses');
+            localStorage.removeItem('cachedMessData');
+            localStorage.removeItem('cachedPhotoURL');
+            updateProfileAvatar(null);
             signOut(auth).then(() => {
                 document.getElementById('app-screen').classList.add('hidden');
                 document.getElementById('auth-screen').classList.remove('hidden');
                 document.getElementById('profile-popover').classList.add('hidden');
                 document.getElementById('splash-screen').classList.add('hidden'); 
-                document.getElementById('auth-screen').classList.remove('hidden'); 
             });
         }
         
@@ -604,30 +641,62 @@
             });
         });
 
-        // --- AUTH LISTENER WITH SPLASH SCREEN LOGIC ---
-        onAuthStateChanged(auth, async (user) => {
+        const hideSplash = () => {
             const splash = document.getElementById('splash-screen');
+            if (splash && !splash.classList.contains('hidden')) {
+                splash.style.opacity = '0';
+                splash.style.pointerEvents = 'none';
+                setTimeout(() => splash.classList.add('hidden'), 300);
+            }
+        };
+
+        // --- AUTH LISTENER WITH NON-BLOCKING INSTANT SPLASH DISMISSAL ---
+        onAuthStateChanged(auth, (user) => {
             const authScreen = document.getElementById('auth-screen');
             const appScreen = document.getElementById('app-screen');
 
             if (user) {
+                localStorage.setItem('isLoggedIn', 'true');
                 authScreen.classList.add('hidden');
                 appScreen.classList.remove('hidden');
                 
-                const snap = await getDoc(doc(db, "users", user.uid));
-                if (snap.exists()) userCourses = snap.data().courses || {};
-                
+                // 1. Immediately render avatar & cached data
+                if (user.photoURL) {
+                    localStorage.setItem('cachedPhotoURL', user.photoURL);
+                    updateProfileAvatar(user.photoURL);
+                } else {
+                    const cachedPhoto = localStorage.getItem('cachedPhotoURL');
+                    if (cachedPhoto) updateProfileAvatar(cachedPhoto);
+                }
+
                 renderTimetable();
                 fetchMessData();
                 
                 const pref = localStorage.getItem('messPref');
                 if(pref) document.getElementById('mess-category-select').value = pref;
 
-                setTimeout(() => splash.classList.add('hidden'), 300);
+                // 2. Dismiss splash screen instantly with smooth fade (max 1 bounce)
+                setTimeout(hideSplash, 200);
+
+                // 3. Silently sync latest data from Firestore in the background
+                getDoc(doc(db, "users", user.uid)).then((snap) => {
+                    if (snap.exists()) {
+                        const cloudCourses = snap.data().courses || {};
+                        if (JSON.stringify(cloudCourses) !== JSON.stringify(userCourses)) {
+                            userCourses = cloudCourses;
+                            localStorage.setItem('cachedCourses', JSON.stringify(userCourses));
+                            renderTimetable();
+                        }
+                    }
+                }).catch((err) => {
+                    console.warn('Background sync warning:', err);
+                });
+
             } else {
+                localStorage.removeItem('isLoggedIn');
                 appScreen.classList.add('hidden');
                 authScreen.classList.remove('hidden');
-                splash.classList.add('hidden');
+                hideSplash();
             }
         });
         
@@ -678,11 +747,13 @@
                     <ion-icon name="sunny-outline" class="hidden dark:block text-xl text-yellow-400"></ion-icon>
                 </button>
                 <div class="relative">
-                    <button id="profile-btn" onclick="toggleProfileMenu()" class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-300 hover:ring-2 hover:ring-indigo-500 transition">
-                        <ion-icon name="person" class="text-lg"></ion-icon>
+                    <button id="profile-btn" onclick="toggleProfileMenu()" class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-300 hover:ring-2 hover:ring-indigo-500 transition overflow-hidden">
+                        <span id="profile-avatar-container" class="w-full h-full flex items-center justify-center">
+                            <ion-icon name="person" class="text-lg"></ion-icon>
+                        </span>
                     </button>
                     <div id="profile-popover" class="hidden absolute right-0 top-12 w-64 bg-white dark:bg-[#1e293b] rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 p-4 z-50 animate-fade-in-up origin-top-right">
-                        <p class="text-xs text-black font-bold uppercase tracking-wider mb-3"><a href="https://portfolio.mambaclub.site/" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">MAMBA <span style="color: #ff4444">MEDIA</span></a></p>
+                        <p class="text-xs text-black dark:text-white font-bold uppercase tracking-wider mb-3"><a href="https://portfolio.mambaclub.site/" target="_blank" rel="noopener noreferrer" style="text-decoration: none;">MAMBA <span style="color: #ff4444">MEDIA</span></a></p>
                         <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg mb-4">
                             <p class="text-sm italic text-gray-600 dark:text-gray-300 leading-relaxed">"Made with all due hate to the fact that we need to create our own timetable every semester."</p>
                         </div>
